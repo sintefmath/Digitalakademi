@@ -62,45 +62,6 @@ plot_losses = PlotLosses()
 
 
 def load_data(filename):
-    store = pd.HDFStore(filename)
-    plant = store.get('plant/plant1')
-    gen0 = store.get('generator/generator0')
-    gen1 = store.get('generator/generator1')
-    gen2 = store.get('generator/generator2')
-    gen3 = store.get('generator/generator3')
-    gen4 = store.get('generator/generator4')
-    gen5 = store.get('generator/generator5')
-    resrv1 = store.get('reservoir/rsv1')
-    resrv2 = store.get('reservoir/rsv2')
-    store.close()
-
-
-    df_in = pd.DataFrame()
-    df_in['h_r1'] = resrv1['head'].asfreq('H')[:]
-    df_in['h_r2'] = resrv2['head'].asfreq('H')[:]
-    df_in['P_0'] = gen0['production'].asfreq('H')[:]
-    df_in['P_1'] = gen1['production'].asfreq('H')[:]
-    df_in['P_2'] = gen2['production'].asfreq('H')[:]
-    df_in['P_3'] = gen3['production'].asfreq('H')[:]
-    df_in['P_4'] = gen4['production'].asfreq('H')[:]
-    df_in['P_5'] = gen5['production'].asfreq('H')[:]
-    #    df_in['P_tot'] = plant['production'][:]
- 
-    df_out = pd.DataFrame()
-    df_out['loss_head_0'] = gen0['head_loss'].asfreq('H')[:]
-    df_out['loss_head_1'] = gen1['head_loss'].asfreq('H')[:]
-    df_out['loss_head_2'] = gen2['head_loss'].asfreq('H')[:]
-    df_out['loss_head_3'] = gen3['head_loss'].asfreq('H')[:]
-    df_out['loss_head_4'] = gen4['head_loss'].asfreq('H')[:]
-    df_out['loss_head_5'] = gen5['head_loss'].asfreq('H')[:]
-    df_out['loss_tail'] = plant['tailrace_loss'].asfreq('H')[:]
- 
-    df = pd.concat([df_in, df_out], axis=1)
-
-    return df
-
-
-def load_data_old(filename):
 
 
     #Load all data
@@ -117,26 +78,64 @@ def load_data_old(filename):
     store.close()
 
     df_in = pd.DataFrame()
-    df_in['h_r1'] = resrv1['head'][:]
-    df_in['h_r2'] = resrv2['head'][:]
-    df_in['P_0'] = gen0['production'][:]
-    df_in['P_1'] = gen1['production'][:]
-    df_in['P_2'] = gen2['production'][:]
-    df_in['P_3'] = gen3['production'][:]
-    df_in['P_4'] = gen4['production'][:]
-    df_in['P_5'] = gen5['production'][:]
+    df_in['h_r1'] = np.array(resrv1['head'][:])
+    df_in['h_r2'] = np.array(resrv2['head'][:])
+    df_in['P_0'] = np.array(gen0['production'][:])
+    df_in['P_1'] = np.array(gen1['production'][:])
+    df_in['P_2'] = np.array(gen2['production'][:])
+    df_in['P_3'] = np.array(gen3['production'][:])
+    df_in['P_4'] = np.array(gen4['production'][:])
+    df_in['P_5'] = np.array(gen5['production'][:])
 #    df_in['P_tot'] = plant['production'][:]
 
     df_out = pd.DataFrame()
-    df_out['loss_head_0'] = gen0['head_loss'][:]
-    df_out['loss_head_1'] = gen1['head_loss'][:]
-    df_out['loss_head_2'] = gen2['head_loss'][:]
-    df_out['loss_head_3'] = gen3['head_loss'][:]
-    df_out['loss_head_4'] = gen4['head_loss'][:]
-    df_out['loss_head_5'] = gen5['head_loss'][:]
-    df_out['loss_tail'] = plant['tailrace_loss'][:]
+    df_out['loss_head_0'] = np.array(gen0['head_loss'][:])
+    df_out['loss_head_1'] = np.array(gen1['head_loss'][:])
+    df_out['loss_head_2'] = np.array(gen2['head_loss'][:])
+    df_out['loss_head_3'] = np.array(gen3['head_loss'][:])
+    df_out['loss_head_4'] = np.array(gen4['head_loss'][:])
+    df_out['loss_head_5'] = np.array(gen5['head_loss'][:])
+    df_out['loss_tail'] = np.array(plant['tailrace_loss'][:])
 
     df = pd.concat([df_in, df_out], axis=1)
 
    
     return df
+
+
+def load_data(filename):
+
+    #Load all data
+    store = pd.HDFStore(filename)
+    plant = store.get('plant/plant1')
+    gen0 = store.get('generator/generator0')
+    gen1 = store.get('generator/generator1')
+    gen2 = store.get('generator/generator2')
+    gen3 = store.get('generator/generator3')
+    gen4 = store.get('generator/generator4')
+    gen5 = store.get('generator/generator5')
+    resrv1 = store.get('reservoir/rsv1')
+    resrv2 = store.get('reservoir/rsv2')
+    store.close()
+
+    df_in = pd.DataFrame()
+    df_in['h_r1'] = np.array(resrv1['head'])
+    df_in['h_r2'] = np.array(resrv2['head'])
+    df_in['P_0'] = np.array(gen0['production'])
+    df_in['P_1'] = np.array(gen1['production'])
+    df_in['P_2'] = np.array(gen2['production'])
+    df_in['P_3'] = np.array(gen3['production'])
+    df_in['P_4'] = np.array(gen4['production'])
+    df_in['P_5'] = np.array(gen5['production'])
+    #    df_in['P_tot'] = plant['production'][:]
+    
+    df_out = pd.DataFrame()
+    df_out['loss_head_0'] = np.array(gen0['head_loss'])
+    df_out['loss_head_1'] = np.array(gen1['head_loss'])
+    df_out['loss_head_2'] = np.array(gen2['head_loss'])
+    df_out['loss_head_3'] = np.array(gen3['head_loss'])
+    df_out['loss_head_4'] = np.array(gen4['head_loss'])
+    df_out['loss_head_5'] = np.array(gen5['head_loss'])
+    df_out['loss_tail'] = np.array(plant['tailrace_loss'])
+
+    df = pd.concat([df_in, df_out], axis=1)
