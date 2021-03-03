@@ -1,0 +1,708 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.6.0
+  kernelspec:
+    display_name: Python 3
+    language: python
+    name: python3
+---
+
+<!-- #region slideshow={"slide_type": "slide"} -->
+# Details of machine learning and optimization
+**Hands on: Optimising production of a hydro power plant**
+
+## Instructions
+
+PLEASE READ ALL INSTRUCTIONS EVEN IF YOU THINK THEY LOOK FAMILIAR FROM "INTRODUCTION TO MACHINE LEARNING". THEY ARE NOT THE SAME...
+
+This is a jupyter notebook. You can run the code in each cell with "shift + enter" (or the run button above). Think of it as a script with blocks that can be run independently.
+
+The notebook is running on a remote server. This means that you wont have to setup anything. When you are finished, you can save it to your own laptop under "File" and "Download as". However, in order to run locally you will also need the datafiles, python 3.6 or 3.7 and all the necessary packages (easily installed with anaconda).
+
+The intention with this notebook is for you to get familiar with some more advanced details of machine learning and an example of how to combine it with optimization. Focus on the concepts rather than the code. 
+
+The instructions for the exercises are given in orange text.
+<!-- #endregion -->
+
+<!-- #region slideshow={"slide_type": "slide"} -->
+## Load the relevant python packages
+<!-- #endregion -->
+
+```{python slideshow={'slide_type': 'subslide'}}
+# Ignore all warnings
+import warnings
+warnings.filterwarnings('ignore')
+
+# numpy allows for efficient array operations
+import numpy as np
+
+# pandas is used to structure all data in data frames and do simple operations. Works well for datasets that are 
+# sufficiently small they can be stored in memory.
+import pandas as pd 
+
+# scikit-learn contains simple and efficient tools for data mining and data analysis
+from sklearn.preprocessing import StandardScaler, MinMaxScaler  # Feature scaling
+from sklearn.model_selection import train_test_split  # Splitting test and training data randomly
+from sklearn.model_selection import cross_val_score  # Model evaluation
+from sklearn.model_selection import RandomizedSearchCV  # Hyper parameter search
+from sklearn.metrics import mean_squared_error  # Metric
+from scipy.stats import randint, uniform
+
+# keras is a high-level interface for deep learning. We will use tensorflow as backend
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.wrappers.scikit_learn import KerasRegressor
+
+# Functions for this specific dataset. Feel free to have a look in the file aux_functions.py
+from aux_functions import *
+
+# We use Matplotlib pyplot for visualisation
+import matplotlib.pyplot as plt
+from IPython.display import Image
+
+# seaborn provide useful statistical tools and quick visualisation
+import seaborn as sns  
+
+# We will use IPopt later for optimization
+import cyipopt
+
+plt.style.use('ggplot')
+
+```
+
+<!-- #region slideshow={"slide_type": "slide"} -->
+## The modelling challenge
+Consider a hydro power plant with six generators each with a power output of ``P_i``. Each generator has a loss, $\Delta h_i^{head}$, which is related to the individual production of all generators in a complicated way. The **challenge is to optimise the power production while minimising the loss in the system**.
+
+The strategy is to use simulated data to train a neural network to describe the relation between production and loss, and then use that in the optimisation.
+
+In the figure below and in the data file, ``h_r1`` is the water level in the input reservoir, ``hr_2`` is the water level of the output reservoir. Part of the loss is above each turbine, $\Delta h_i^{head}$, and part of the loss is summed below the turbines $\Delta h^{tail}$.
+<!-- #endregion -->
+
+```{python slideshow={'slide_type': 'subslide'}}
+Image("./2res6turbines.png",  width=800)
+```
+
+## Data preprocessing
+
+
+### Load data
+
+```{python}
+file = 'plant_with_6_gen_tailrace_loss.h5'
+data = load_data(file)
+print(data.columns)
+variables = ['h_r1', 'h_r2', 'P_0', 'loss_head_0', 'P_1', 'loss_head_1', 'P_2', 'loss_head_2', 
+         'P_3', 'loss_head_3', 'P_4', 'loss_head_4', 'P_5', 'loss_head_5', 'loss_tail']
+```
+
+### Plotting the data
+Visualisation and checking of data is very important. Always.
+
+<span style="color:orange"> Visualise the data to check for outliers, faulty data, obvious parameter relations etc. Use jmin and jmax to zoom in on a smaller range of timesteps (jmin/jmax are bin/pixel numbers) </span>
+
+
+```{python}
+Nplots = len(variables)
+jmin = 0      # minimum pixel number
+jmax = -1      # maximum pixel number, set to -1 to include all
+fig, axs = plt.subplots(Nplots, 1, figsize=(11,2.5*Nplots))
+
+for i in range(Nplots):
+    axs[i].plot(data[variables[i]].iloc[jmin:jmax])
+    axs[i].set_ylabel(variables[i])   
+```
+
+### Additional visualisation and correlation
+Normally we would always use a scatter plot and correlation matrix to check for dependencies and feature engineering, but in order to get to more interesting aspects, **today we will skip those steps**. The code is given below for future reference.
+
+```{python}
+# Visualising data dependencies with seaborn, might take a while to run 
+# Create the pairgrid object
+#grid = sns.PairGrid(data=data, vars=variables, diag_sharey=False)
+
+# Upper is a scatter plot
+#grid.map_lower(plt.scatter, alpha=0.8, s=20)
+
+# Diagonal is a histogram
+#grid.map_diag(sns.kdeplot)
+# Bottom is density plot
+#grid.map_upper(sns.kdeplot)
+#plt.savefig('/gridmap.pdf')
+#plt.show()
+```
+
+Parameter correlation is a quick way to check which parameters are important for the analysis. A trained eye will spot the correlations from the gridplot above, but still a quantification can be useful. We use a Spearman correlation since we don't know if the relationship between parameters is linear (Pearson correlation assumes linearity), and we're not interested in absolute values of correlations but rather the relative correlation.
+
+```{python}
+# Create correlation matrix
+#corr_matrix = data[variables].corr(method='spearman')
+# Plot
+#fig, axs = plt.subplots(1, 1, figsize=(10, 10))
+#sns.heatmap(abs(corr_matrix), annot=True, cmap = plt.cm.autumn_r, fmt='.2f', ax=axs)
+```
+
+### Feature engineering and input/output features
+We will use the heights and the individual power productions as input features, and the losses as output features. Since we want to optimise on the total loss, we will add it as an additional feature.
+
+```{python}
+loss_list = ['loss_head_0', 'loss_head_1', 'loss_head_2', 
+             'loss_head_3', 'loss_head_4', 'loss_head_5', 'loss_tail']
+data['loss_tot'] = data[loss_list].sum(axis=1)  # summing all losses in each row
+```
+
+```{python}
+X_feat = ['h_r1', 'h_r2', 'P_0', 'P_1', 'P_2', 'P_3', 'P_4', 'P_5']
+y_feat = ['loss_head_0', 'loss_head_1', 'loss_head_2', 
+          'loss_head_3', 'loss_head_4', 'loss_head_5', 'loss_tail', 'loss_tot']
+features = X_feat + y_feat
+```
+
+### Training and test data
+
+Before we can train a model, we need to split the data in a training sample and a test sample.
+
+We must also split out a sample to use for tuning the model. That is called the validation data. We want the validation to take place on chronological data rather than the randomized training data.
+
+<span style="color:orange"> Chose the fraction of data to want to use for test and validation. </span>
+
+```{python}
+train_frac = 0.2                # Fraction of total data for training
+test_frac = 1 - train_frac      # Reserved for testing. Not used in training
+val_frac = 0.2                  # Fraction of training data used during training for tuning of hyper parameters
+```
+
+```{python}
+train_split_index = int(train_frac*len(data))
+val_split_index = int(val_frac*train_split_index) 
+# We split out the validation data rather than using the validation_split variable in keras, since we want the 
+# validation to take place on chronological data rather than the randomized training data
+
+data_train = data.iloc[:train_split_index]
+data_test = data.iloc[train_split_index:]
+data_val = data.iloc[train_split_index-val_split_index:train_split_index]      
+```
+
+### Visualising the split (on the dependent features)
+
+```{python}
+Nplots = len(y_feat)
+fig, axs = plt.subplots(Nplots, 1, figsize=(11,3*Nplots), sharey=False, sharex=True)
+
+for i in range(Nplots):
+    axs[i].plot(data_train[y_feat[i]], label='Training data')
+    axs[i].plot(data_val[y_feat[i]], label='Validation data')
+    axs[i].plot(data_test[y_feat[i]], label='Test data')
+    axs[i].set_ylabel(f'loss {y_feat[i]} [m]')
+    axs[i].legend()
+        
+```
+
+```{python}
+X_train = data_train[X_feat]#.values
+y_train = data_train[y_feat]#.values
+X_val = data_val[X_feat]#.values
+y_val = data_val[y_feat]#.values
+X_test = data_test[X_feat]#.values
+y_test = data_test[y_feat]#.values
+```
+
+```{python}
+print(np.shape(X_train))
+```
+
+### Feature scaling
+Not all features have the same scale: Some have values of the order of 1000s, and some are 0.1. In order to let them equally influence the model, we need to "put everything on the same scale". We can either scale everything to a fixed range of values (MinMaxScaler) or change the distribution to become a normalised Gaussian (StandardScaler).
+
+Depending on the sample size, the test data can either be scaled with their own scaling (for large samples), or with the training sample (small samples). What to chose depends on how you would treat the actual data you will later use with the model.
+
+```{python}
+# Feature scaling
+sc_X = MinMaxScaler(feature_range=[0,1])
+sc_y = MinMaxScaler(feature_range=[0,1])
+X_val_scaled = pd.DataFrame(sc_X.fit_transform(X_val), columns=X_feat)
+y_val_scaled = pd.DataFrame(sc_y.fit_transform(y_val), columns=y_feat)
+X_train_scaled = pd.DataFrame(sc_X.fit_transform(X_train), columns=X_feat)
+y_train_scaled = pd.DataFrame(sc_y.fit_transform(y_train), columns=y_feat)
+X_test_scaled = pd.DataFrame(sc_X.transform(X_test), columns=X_feat)
+```
+
+## Neural network
+<span style="color:orange"> Stop and wait for further instructions. </span>
+
+
+
+
+### Defining the neural network
+We use the keras framework with the Tensorflow backend to define the network (if you have no idea what that sentece was about, don't worry). 
+
+The neural network itself will take the X-features as input and provide the y-estimates as output, but we also wrap it in a function that takes the number of neurons in each layer as input. The last parameter is dropout fraction which we apply to prevent overfitting.
+
+```{python}
+def createModel(number_neurons1=10, number_neurons2=6, number_neurons3=4, dropout_frac=0.1):
+    model = Sequential()
+    model.add(Dense(units=number_neurons1, activation='relu', input_dim=X_train.shape[1]))
+    model.add(Dropout(dropout_frac))  # Preventing overfitting
+    model.add(Dense(units=number_neurons2, activation='relu'))
+    model.add(Dropout(dropout_frac))  # Preventing overfitting
+    model.add(Dense(units=number_neurons3, activation='relu'))
+    model.add(Dropout(dropout_frac))  # Preventing overfitting
+    model.add(Dense(units=y_train.shape[1], activation='linear'))
+
+    model.compile(loss='mean_squared_error', metrics=['accuracy'], optimizer='adam')
+    return model
+```
+
+<span style="color:orange"> Chose the size of each layer and the dropout fraction by changing the values of the function parameters in the function call. </span>
+
+```{python}
+model = createModel(number_neurons1=10, number_neurons2=6, number_neurons3=4, dropout_frac=0.1)
+```
+
+### Visualisation of a neural network
+If you want to visualise the neural network, you can e.g. use http://alexlenail.me/NN-SVG/index.html
+
+
+### Training the model
+This may take a couple of minutes if the network is large. The figure below shows the loss computed on the training sample and the validation sample. The loss is the quantity the neural network aims to minimize.
+
+The relevant hyper parameters are:
+
+Epochs: The number of times the weights in the network will be updated. The value should be large enough for the network to converge (minimize loss to a stable level). If you run the training again without redefining the network, the training will continue from the previous session.
+
+Batch size: Determines the number of samples for cross-validation. Generally you should use as small a batch size as patience/available computing time allows for.
+
+Callbacks: A smart way to plot the loss during training. Requires the aux_functions.py
+
+<span style="color:orange"> Chose some values for the hyper parameters and train the network </span>
+
+```{python}
+training_history = model.fit(X_train_scaled, y_train_scaled, 
+                             validation_data=(X_val_scaled, y_val_scaled), 
+                             epochs=50,                  
+                             batch_size=100,    
+                             callbacks=[plot_losses])
+```
+
+### Using the model to predict the test data
+Remember that we scaled the input and output data before training the model. Now we need to rescale the predictions before we compare to the actual values from the test data.
+
+```{python}
+y_scaled = pd.DataFrame(model.predict(X_test_scaled), columns=y_feat)  # Predicting
+y_pred = pd.DataFrame(sc_y.inverse_transform(y_scaled), columns=y_feat)  # Rescaling
+```
+
+### Plotting the results
+Compare the predicted results with the test data y values. 
+
+```{python}
+Nplots = len(y_feat)
+fig, axs = plt.subplots(Nplots, 1, figsize=(11,3*Nplots), sharey=False, sharex=True)
+
+for i in range(Nplots):
+    axs[i].plot(y_pred[y_feat[i]].values, label = 'Estimated', alpha=0.8) #  '.'
+    axs[i].plot(y_test[y_feat[i]].values, label = 'Actual test data', alpha=0.8)  #'.'
+    axs[i].set_ylabel(f'loss {y_feat[i]} [m]')
+    axs[i].legend()
+```
+
+It seems that the network tends to underestimate higher value and overstimate lower values. This is typical of an error-minimisation/least-squares approach.
+
+
+## Optmisation with the neural network
+<span style="color:orange"> Before you start this section, wait for further instructions. </span>
+
+
+### Get the gradients
+In order to optimise with the neural network, we need to get the gradients (derivatives) of the feature we would like to optimise, with respect to all the input features.
+
+```{python}
+# This function may give a warning. Just ignore.
+def get_gradients(model, inputs):
+    with tf.GradientTape() as tape:
+        features = tf.convert_to_tensor(inputs)
+        tape.watch(features)
+        predictions = model(features)
+    gradients = tape.jacobian(predictions, features)
+    return gradients
+
+# Utility for visualizing optimization results
+def plot_results(ax, lb, ub, init, found, model):
+    bound_palette = sns.dark_palette('brown')
+    production_palette = sns.light_palette('green')
+    loss_palette = sns.light_palette('red')
+    time_indices = np.array(range(len(lb)))
+    ax.plot(time_indices, lb, label='lower', c=bound_palette[0], linestyle='dotted')
+    ax.plot(time_indices, ub, label='upper', c=bound_palette[-1], linestyle='dotted')
+    ax.plot(time_indices, init.sum(axis=1), label='orig prod', c=production_palette[2], linestyle='dashed')
+    ax.plot(time_indices, model(init).numpy()[:,-1], label ='orig loss', c = loss_palette[2], linestyle='dashed')
+    ax.plot(time_indices, found.sum(axis=1), label='opt prod', c=production_palette[-1])
+    ax.plot(time_indices, model(found).numpy()[:,-1], label = 'opt loss', c = loss_palette[-1])
+    ax.legend(loc='upper left')
+```
+
+### Simple optimization
+
+The full code appears here, but as can be seen it is a little complex. The important part to understand is that we provide ipyopt with the objective and constraints, as well as their partial derivatives. 
+
+<span style="color:orange"> For now, just execute the code... </span>
+
+```{python}
+def optimize_model(model, x0, prod_lower, prod_upper):
+    
+    rows = x0.shape[0]
+    cols = x0.shape[1]
+    num_vars = rows * cols
+    
+    def obj_func(xk):
+        x = xk.reshape(rows, cols)
+        objval = model(x).numpy()[:,-1].sum()
+        return objval
+    
+    def obj_grad(xk, out):
+        x = xk.reshape(rows, cols)
+        jacs = get_gradients(model, x)
+        comb = jacs.numpy()[:,-1].sum(axis=0)
+        out[:] = comb.flatten()
+
+    def constraint_func(xk, out):
+        x = xk.reshape(rows, cols)
+        out[:] = x.sum(axis=1)
+
+    def constraint_jac(xk, out):
+        out[:] = 1.0*np.ones(num_vars)
+    
+    lx = []
+    ly = []
+    for i in range(rows):
+        for j in range(cols):
+            lx.append(i)
+            ly.append(i * cols + j)
+    
+    jac_sparsity_indices = (np.array(lx), np.array(ly))
+    
+    x_L = np.array([0.0] * num_vars)
+    x_U = np.array([1.0] * num_vars)
+    
+    g_L = np.array([prod_lower] * rows, dtype=np.float)
+    g_U = np.array([prod_upper] * rows, dtype=np.float)
+    
+    # And solve
+#    ipyopt.set_loglevel(30)
+    
+    print('Setting problem...')
+    
+    nlp = cyipopt.Problem(num_vars, x_L, x_U, rows, g_L, g_U, jac_sparsity_indices, 
+                       0, obj_func, obj_grad, constraint_func, constraint_jac)
+    
+
+    x, obj, status = nlp.solve(x0.flatten())
+    
+    print(f'Initial value: {obj_func(x0)}')
+    print(f'Found value: {obj_func(x)}')
+    print(f'Status: {status}')
+    
+    return x.reshape(rows, cols)
+```
+
+<span style="color:orange"> Try to change the lower or upper production values. </span>
+
+```{python}
+# Let's try with only three time steps first
+init = X_test_scaled.values[:3,:]
+l_prod = 1.0
+u_prod = 5.0
+found = optimize_model(model, init, l_prod, u_prod)
+fig, ax = plt.subplots(1,1)
+plot_results(ax, [l_prod] * init.shape[0], [u_prod] * init.shape[0], init, found, model)
+```
+
+```{python}
+# Now reduce upper
+init = X_test_scaled.values[:3,:]
+l_prod = 1.0
+u_prod = 3.0
+found = optimize_model(model, init, l_prod, u_prod)
+fig, ax = plt.subplots(1,1)
+plot_results(ax, [l_prod] * init.shape[0], [u_prod] * init.shape[0], init, found, model)
+```
+
+<span style="color:orange"> For a more interesting case, try with 60 time steps. </span>
+
+```{python}
+#Let's try with 60 time steps
+init = X_test_scaled.values[:60,:]
+l_prod = 1.0
+u_prod = 7.0
+found = optimize_model(model, init, l_prod, u_prod)
+fig, ax = plt.subplots(1,1)
+plot_results(ax, [l_prod] * init.shape[0], [u_prod] * init.shape[0], init, found, model)
+```
+
+### With more realism
+
+The model above is not realistic. The production is allowed to vary wildly between separate timesteps, and there is no difference in the demand per time step. We will now rectify this, by introducing ramping constraints between time steps and a time-varying production bound.
+
+<span style="color:orange"> For now, just execute the code... </span>
+
+```{python}
+# Utility for making sinusoidal production
+def make_lower_prod(bottom, top, steps):
+    args = np.arange(0,2*np.pi, step = 2*np.pi/steps)
+    prod = ((1 - np.cos(args))/2.0) * (top - bottom) + bottom
+    return prod
+```
+
+```{python}
+def optimize_model(model, x0, prod_L, prod_U, step_size):
+    
+    rows = x0.shape[0]
+    cols = x0.shape[1]
+    num_vars = rows * cols
+    
+    def obj_func(xk):
+        x = xk.reshape(rows, cols)
+        objval = model(x).numpy()[:,-1].sum()
+        return objval
+    
+    def obj_grad(xk, out):
+        x = xk.reshape(rows, cols)
+        jacs = get_gradients(model, x)
+        comb = jacs.numpy()[:,-1].sum(axis=0)
+        out[:] = comb.flatten()
+
+    def constraint_func(xk, out):
+        x = xk.reshape(rows, cols)
+        prod_cons = x.sum(axis=1)
+        step_cons = (x[1:] - x[:-1]).flatten()
+        out[:] = np.concatenate((prod_cons, step_cons))
+
+    #Jacobian is constant here
+    prod_jac = 1.0*np.ones(num_vars)
+    step_jac = np.ones(2*(num_vars - cols)) # rows - 1 such constraints, with 2 contributions each
+    step_jac[::2] *= -1
+    full_jac = np.concatenate((prod_jac, step_jac))
+    
+    def constraint_jac(xk, out):
+        out[:] = full_jac
+    
+    lx = []
+    ly = []
+    #Add indices for prod cons 
+    for i in range(rows):
+        for j in range(cols):
+            lx.append(i)
+            ly.append(i * cols + j)
+    #Add indices for step cons
+    for i in range(0, rows-1):
+        for j in range(0, cols):
+            lx.append(rows + i * cols + j)
+            ly.append(i*cols + j)
+            lx.append(rows + i * cols + j)
+            ly.append((i+1) * cols + j)
+    jac_sparsity_indices = (np.array(lx), np.array(ly))
+    
+    x_L = np.array([0.0] * num_vars)
+    x_U = np.array([1.0] * num_vars)
+    
+    g_L = np.concatenate((prod_L, np.array([-step_size]*(num_vars-cols))))
+    g_U = np.concatenate((prod_U, np.array([step_size]*(num_vars-cols))))
+    
+    # And solve
+    ipyopt.set_loglevel(30)
+    
+    print('Setting problem...')
+    
+    nlp = ipyopt.Problem(num_vars, x_L, x_U, len(g_L), g_L, g_U, jac_sparsity_indices, 
+                       0, obj_func, obj_grad, constraint_func, constraint_jac)
+    
+
+    x, obj, status = nlp.solve(x0.flatten())
+    
+    print(f'Initial value: {obj_func(x0)}')
+    print(f'Found value: {obj_func(x)}')
+    print(f'Status: {status}')
+    
+    return x.reshape(rows, cols)
+```
+
+<span style="color:orange"> Experiment with different conditions </span>
+
+```{python}
+# Strict curve
+init = X_test_scaled.values[:60,:]
+l_prod = make_lower_prod(2.0, 4.0, init.shape[0])
+u_prod = l_prod + 0.5
+found = optimize_model(model, init, l_prod, u_prod, 0.5)
+fig, ax = plt.subplots(1,1)
+plot_results(ax, l_prod, u_prod, init, found, model)
+```
+
+```{python}
+# Upper looser curve with step constraint
+init = X_test_scaled.values[:60,:]
+l_prod = make_lower_prod(4.0, 5.0, init.shape[0])
+u_prod = l_prod + 3.0
+found = optimize_model(model, init, l_prod, u_prod, 0.2) #Try with 0.001 instead for the step size
+fig, ax = plt.subplots(1,1)
+plot_results(ax, l_prod, u_prod, init, found, model)
+```
+
+## Evaluation of model performance
+<span style="color:orange"> Before you start this section, wait for further instructions. </span>
+
+
+### Evaluating the cross-validation scores
+One way to quantify if the neural network provides a reasonable fit is to compute the mean squared error on multiple splots of the test data (cross-validation). ScikitLearn has a function for that, which returns the score for each of the data splits. If the mean squared error is small, the model is a good fit to the data. If the variation is small, the model has also managed to generalise the information in the data. (For technical reasons ScikitLearn uses negative mean squared error).
+
+<span style="color:orange"> Is your model good? </span>
+
+```{python}
+scores = cross_val_score(KerasRegressor(build_fn=createModel, nb_epoch=30, verbose=0), 
+                         X_test_scaled, y_test,  cv=5, scoring="neg_mean_squared_error")
+print(scores*-1)
+```
+
+## Hyperparameter optimization
+<span style="color:orange"> Before you start this section, wait for further instructions. </span>
+
+
+### Manual
+
+
+<span style="color:orange"> Try different values for the hyper parameters by replacing the values below </span>
+
+```{python}
+dropout_frac = 0      # fraction between 0 and 1
+number_neurons1 = 5   # integer
+number_neurons2 = 6   # integer
+number_neurons3 = 7   # integer
+```
+
+```{python}
+model2 = createModel(dropout_frac=dropout_frac, 
+                     number_neurons1=number_neurons1, 
+                     number_neurons2=number_neurons2, 
+                     number_neurons3=number_neurons3)
+```
+
+### Randomized search
+Manually searching through hyper parameters isn't very effective. Instead we will use an option called randomized search, where we specify some ranges for the hyper parameters.
+
+<span style="color:orange"> Set some ranges for the layer sizes and search through the hyper parameter space. This may take a while, so we just run a very small grid with few iterations and cross-validations. </span>
+
+```{python}
+param_dist = {"number_neurons1": randint(4, 6),
+              "number_neurons2": randint(7, 8),
+              "number_neurons3": randint(4, 6),
+              "dropout_frac": [0, 0.1, 0.2]}
+```
+
+```{python}
+# In order to use randomized searh we need to define our model as a regressor
+k_model = KerasRegressor(build_fn=createModel, verbose=0)
+```
+
+```{python}
+# Define the search
+random_search = RandomizedSearchCV(k_model, param_distributions=param_dist,                   
+                                   scoring = "neg_mean_squared_error",
+                                   n_iter=1, cv=2, iid=False)
+```
+
+```{python}
+# Run the search
+random_search.fit(X_train_scaled, y_train_scaled,
+                  validation_data=(X_val_scaled, y_val_scaled),
+                  epochs=30, batch_size=100, verbose=2)
+```
+
+```{python}
+# Print the best score from the random search
+random_search.best_score_*-1
+```
+
+<span style="color:orange"> Compare to the score you got for manual search </span>
+
+```{python}
+# Print the best parameters
+random_search.best_params_
+```
+
+<span style="color:orange"> Compare to the network sizes you had before. Is the fit better now? </span>
+
+In reality we would run a larger grid, so if you didn't get any improvement, you can try with 
+
+best_params = {'dropout_frac': 0.1, 'number_neurons1': 18, 'number_neurons2': 10, 'number_neurons3': 12}
+
+
+### Visualising the new model
+
+```{python}
+y_scaled = pd.DataFrame(random_search.predict(X_test_scaled), columns=y_feat)  # Predicting
+y_pred = pd.DataFrame(sc_y.inverse_transform(y_scaled), columns=y_feat)  # Rescaling
+```
+
+```{python}
+Nplots = len(y_feat)
+fig, axs = plt.subplots(Nplots, 1, figsize=(11,3*Nplots), sharey=False, sharex=True)
+
+for i in range(Nplots):
+    axs[i].plot(y_pred[y_feat[i]].values, label = 'Estimated', alpha=0.8) 
+    axs[i].plot(y_test[y_feat[i]].values, label = 'Actual test data', alpha=0.8)     
+    axs[i].set_ylabel(f'loss {y_feat[i]} [m]')
+    axs[i].legend()
+```
+
+## Optimisation with better model
+
+Let's try this again.
+
+```{python}
+# We must train a model with the best hyperparameters from the random search
+model2 = createModel(dropout_frac=random_search.best_params_['dropout_frac'], 
+                     number_neurons1=random_search.best_params_['number_neurons1'],
+                     number_neurons2=random_search.best_params_['number_neurons2'],
+                     number_neurons3=random_search.best_params_['number_neurons3'])
+```
+
+<span style="color:orange"> Try some of the same snippets as before. Are the results different? </span>
+
+```{python}
+# Strict curve
+init = X_test_scaled[:60,:]
+l_prod = make_lower_prod(2.0, 4.0, init.shape[0])
+u_prod = l_prod + 0.5
+found = optimize_model(model2, init, l_prod, u_prod, 0.5)
+fig, ax = plt.subplots(1,1)
+plot_results(ax, l_prod, u_prod, init, found, model2)
+```
+
+```{python}
+# Upper looser curve with step constraint
+init = X_test_scaled[:60,:]
+l_prod = make_lower_prod(3.0, 5.0, init.shape[0])
+u_prod = l_prod + 3.0
+found = optimize_model(model2, init, l_prod, u_prod, 0.2)
+fig, ax = plt.subplots(1,1)
+plot_results(ax, l_prod, u_prod, init, found, model2)
+```
+
+```{python}
+# loose again
+init = X_test_scaled[:60,:]
+l_prod = make_lower_prod(3.0, 3.0, init.shape[0])
+u_prod = l_prod + 7.0
+found = optimize_model(model2, init, l_prod, u_prod, 10)
+fig, ax = plt.subplots(1,1)
+plot_results(ax, l_prod, u_prod, init, found, model2)
+```
+
+```{python}
+
+```
