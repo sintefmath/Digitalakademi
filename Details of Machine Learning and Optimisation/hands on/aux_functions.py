@@ -98,7 +98,7 @@ def load_data(filename):
 
     df = pd.concat([df_in, df_out], axis=1)
 
-   
+
     return df
 
 
@@ -127,7 +127,7 @@ def load_data_old(filename):
     df_in['P_4'] = np.array(gen4['production'])
     df_in['P_5'] = np.array(gen5['production'])
     #    df_in['P_tot'] = plant['production'][:]
-    
+
     df_out = pd.DataFrame()
     df_out['loss_head_0'] = np.array(gen0['head_loss'])
     df_out['loss_head_1'] = np.array(gen1['head_loss'])
