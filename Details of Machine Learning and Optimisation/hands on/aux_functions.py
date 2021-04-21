@@ -2,8 +2,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 from IPython.display import clear_output
 import pandas as pd
-
-
+import numpy as np
 
 
 def plot_acc_loss(training_history, logx=False, logy=False, var1=None, var2=None):
@@ -103,7 +102,7 @@ def load_data(filename):
     return df
 
 
-def load_data(filename):
+def load_data_old(filename):
 
     #Load all data
     store = pd.HDFStore(filename)
@@ -139,3 +138,4 @@ def load_data(filename):
     df_out['loss_tail'] = np.array(plant['tailrace_loss'])
 
     df = pd.concat([df_in, df_out], axis=1)
+    return df
