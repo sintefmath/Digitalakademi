@@ -103,7 +103,7 @@ def load_data(filename):
     return df
 
 
-def load_data(filename):
+def load_data_old(filename):
 
     #Load all data
     store = pd.HDFStore(filename)
@@ -139,3 +139,6 @@ def load_data(filename):
     df_out['loss_tail'] = np.array(plant['tailrace_loss'])
 
     df = pd.concat([df_in, df_out], axis=1)
+    
+    return df
+
