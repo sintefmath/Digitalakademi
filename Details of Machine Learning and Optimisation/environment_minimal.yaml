@@ -1,0 +1,12 @@
+name: minimal
+channels:
+  - conda-forge
+dependencies:
+  - cyipopt
+  - tensorflow
+  - jupyter
+  - pandas
+  - pytables
+  - scikit-learn
+  - seaborn
+prefix: /Users/signer/packages/mambaforge-pypy3/envs/minimal
